@@ -1,0 +1,29 @@
+# Dataset configuration
+dataset:
+  train_file: "train.txt"       # Training annotation file (<image_name>  <score>  <caption>)
+  val_file: "val.txt"           # Validation annotation file
+  img_dir: "./images"           # Images directory
+  max_length: 32                # Max caption token length
+  image_size: 224               # Image size
+
+# Model configuration
+model:
+  vision_model_name: "google/vit-base-patch16-224"
+  text_model_name: "bert-base-uncased"
+  hidden_dim: 512               # Fusion layer hidden dimension
+  pretrained: true              # Whether to use pretrained weights
+
+# Training configuration
+train:
+  batch_size: 16
+  epochs: 10
+  lr: 0.0001
+  beta: 0.0001                  # Information bottleneck weight
+  device: "cuda"                # cuda or cpu
+  save_interval: 10             # Interval (epochs) to save checkpoints
+  checkpoint_dir: "checkpoints" # Checkpoint directory
+
+# Validation configuration
+val:
+  batch_size: 16
+  checkpoint: "fusion_regressor.pth"  # Checkpoint path
