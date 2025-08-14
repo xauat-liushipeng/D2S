@@ -44,7 +44,7 @@ def create_transforms(image_size: int, is_training: bool = True):
 	return transforms.Compose(base_transforms)
 
 
-def train_one_epoch(model, dataloader, optimizer, loss_fn, device):
+def train_one_epoch(model, dataloader, optimizer, score_loss, map_loss, device, use_ic_map=False):
 	"""
 	Train the model for one epoch
 	
@@ -52,9 +52,11 @@ def train_one_epoch(model, dataloader, optimizer, loss_fn, device):
 		model: The neural network model
 		dataloader: Training data loader
 		optimizer: Optimizer for updating model parameters
-		loss_fn: Loss function
+		score_loss: Score Loss function
+		map_loss: Map Loss function
 		device: Device to run training on (CPU/GPU)
-	
+		use_ic_map (bool): Whether to use image complexity map
+
 	Returns:
 		tuple: (avg_loss, avg_mse, avg_ib, srcc, plcc) - Average losses and correlation metrics
 	"""
@@ -78,13 +80,19 @@ def train_one_epoch(model, dataloader, optimizer, loss_fn, device):
 			# Multimodal mode: include text inputs
 			input_ids = batch["input_ids"].to(device)    # Tokenized text input IDs
 			attn_mask = batch["attention_mask"].to(device)  # Attention mask for text
-			preds, feats = model(images, input_ids, attn_mask)
+			preds, feats, ic_map = model(images, input_ids, attn_mask)
 		else:
 			# Text-free mode: only vision inputs
-			preds, feats = model(images)
+			preds, feats, ic_map = model(images)
 		
 		# Compute loss components (total loss, MSE loss, Information Bottleneck loss)
-		loss, mse_val, ib_val = loss_fn(preds, scores, feats)
+		loss1, mse, ib = score_loss(preds, scores, feats)
+		if use_ic_map:
+			score_map = ic_map.mean(axis=(1, 2, 3))  # Average IC map across spatial dimensions
+			loss2 = map_loss(score_map, scores, feats)
+			loss = 0.9 * loss1 + 0.1 * loss2
+		else:
+			loss = loss1
 
 		# Backward pass and optimization
 		optimizer.zero_grad()  # Clear previous gradients
@@ -93,9 +101,9 @@ def train_one_epoch(model, dataloader, optimizer, loss_fn, device):
 
 		# Accumulate losses for epoch average
 		total_loss += loss.item()
-		total_mse += mse_val
-		total_ib += ib_val
-		
+		total_mse += mse
+		total_ib += ib
+
 		# Collect predictions and labels for correlation computation
 		all_preds.extend(preds.detach().cpu().numpy())
 		all_scores.extend(scores.detach().cpu().numpy())
@@ -110,7 +118,7 @@ def train_one_epoch(model, dataloader, optimizer, loss_fn, device):
 		
 		# Print training progress for each iteration
 		print(f"  Iter [{iter_idx+1:3d}/{len(dataloader):3d}] | "
-			  f"Loss: {loss.item():.4f} | MSE: {mse_val:.4f} | IB: {ib_val:.6f} | "
+			  f"Loss: {loss.item():.4f} | MSE: {mse:.4f} | IB: {ib:.6f} | "
 			  f"Time: {iter_time:.3f}s | ETA: {estimated_remaining_time:.1f}s | "
 			  f"Total ETA: {total_estimated_time:.1f}s")
 
@@ -121,15 +129,17 @@ def train_one_epoch(model, dataloader, optimizer, loss_fn, device):
 	return total_loss / n, total_mse / n, total_ib / n, srcc, plcc, rmse, rmae
 
 
-def validate(model, dataloader, loss_fn, device):
+def validate(model, dataloader, score_loss, map_loss, device, use_ic_map=False):
 	"""
 	Validate the model on validation dataset
 	
 	Args:
 		model: The neural network model
 		dataloader: Validation data loader
-		loss_fn: Loss function
+		score_loss: Score Loss function
+		map_loss: Map Loss function
 		device: Device to run validation on (CPU/GPU)
+		use_ic_map (bool): Whether to use image complexity map
 	
 	Returns:
 		tuple: (avg_loss, avg_mse, avg_ib, srcc, plcc) - Average losses and correlation metrics
@@ -152,18 +162,24 @@ def validate(model, dataloader, loss_fn, device):
 				# Multimodal mode: include text inputs
 				input_ids = batch["input_ids"].to(device)
 				attn_mask = batch["attention_mask"].to(device)
-				preds, feats = model(images, input_ids, attn_mask)
+				preds, feats, ic_map = model(images, input_ids, attn_mask)
 			else:
 				# Text-free mode: only vision inputs
 				preds, feats = model(images)
-			
-			# Compute loss components
-			loss, reg_loss, ib_loss = loss_fn(preds, scores, feats)
 
-			# Accumulate losses
+			# Compute loss components (total loss, MSE loss, Information Bottleneck loss)
+			loss1, mse, ib = score_loss(preds, scores, feats)
+			if use_ic_map:
+				score_map = ic_map.mean(axis=(1, 2, 3))  # Average IC map across spatial dimensions
+				loss2 = map_loss(score_map, scores, feats)
+				loss = 0.9 * loss1 + 0.1 * loss2
+			else:
+				loss = loss1
+
+			# Accumulate losses for epoch average
 			total_loss += loss.item()
-			total_mse += reg_loss
-			total_ib += ib_loss
+			total_mse += mse
+			total_ib += ib
 			
 			# Collect predictions and labels for correlation computation
 			all_preds.extend(preds.detach().cpu().numpy())
@@ -301,7 +317,9 @@ def main():
 	if config.train.warm > 0:
 		Warmup_scheduler = WarmUpLR(optimizer, iter_per_epoch * config.train.warm)
 
-	loss_fn = MSE_IB_Loss(Lambda=config.train.Lambda)
+	score_loss_fn = MSE_IB_Loss(Lambda=config.train.Lambda)
+	map_loss_fn = MSE_IB_Loss(Lambda=0.)
+
 	print(f"Optimizer: AdamW with learning rate {config.train.lr}")
 	print(f"Loss function: MSE + Information Bottleneck (λ={config.train.Lambda})")
 
@@ -320,7 +338,7 @@ def main():
 		# Training phase
 		print(f"Training phase...")
 		t_loss, t_mse, t_ib, t_srcc, t_plcc, t_rmse, t_rmae = train_one_epoch(
-			model, train_loader, optimizer, loss_fn, device
+			model, train_loader, optimizer, score_loss_fn, map_loss_fn, device, config.model.use_icnet_head
 		)
 
 		# Calculate training time for this epoch
@@ -332,7 +350,7 @@ def main():
 		# Validation phase
 		print(f"Validation phase...")
 		v_loss, v_mse, v_ib, v_srcc, v_plcc, v_rmse, v_rmae, v_time = validate(
-			model, val_loader, loss_fn, device
+			model, val_loader, score_loss_fn, map_loss_fn, device, config.model.use_icnet_head
 		)
 		
 		# Calculate total epoch time

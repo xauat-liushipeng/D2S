@@ -21,8 +21,8 @@ class MSE_IB_Loss(nn.Module):
 		labels: [B] ground-truth complexity scores
 		fused_feats: [B, D] fused feature vectors (image_feat + text_feat)
 		"""
-		reg_loss = self.mse(preds, labels)
-		ib_loss = self.Lambda * torch.mean(torch.sum(fused_feats ** 2, dim=1))
+		mse = self.mse(preds, labels)
+		ib = self.Lambda * torch.mean(torch.sum(fused_feats ** 2, dim=1))
 
-		total_loss = reg_loss + ib_loss
-		return total_loss, reg_loss.item(), ib_loss.item()
+		total = mse + ib
+		return total, mse.item(), ib.item()

@@ -160,12 +160,12 @@ class ICNetHead(nn.Module):
 		super(ICNetHead, self).__init__()
 		# map prediction head
 		self.to_map_f = conv_bn_relu(256 * 2, 256 * 2)
-		self.to_map_f_slam = slam(32)
+		# self.to_map_f_slam = slam(32)
 		self.to_map = to_map(256 * 2)
 
 		# score prediction head
 		self.to_score_f = conv_bn_relu(256 * 2, 256 * 2)
-		self.to_score_f_slam = slam(32)
+		# self.to_score_f_slam = slam(32)
 		self.head = nn.Sequential(
 			nn.Linear(256 * 2, 512),
 			nn.ReLU(),
@@ -175,9 +175,12 @@ class ICNetHead(nn.Module):
 		self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
 
 	def forward(self, x_cat):
-		cly_map = self.to_map(self.to_map_f_slam(self.to_map_f(x_cat)))
+		# cly_map = self.to_map(self.to_map_f_slam(self.to_map_f(x_cat)))
+		cly_map = self.to_map(self.to_map_f(x_cat))
 
-		score_feature = self.to_score_f_slam(self.to_score_f(x_cat))
+		# score_feature = self.to_score_f_slam(self.to_score_f(x_cat))
+		score_feature = self.to_score_f(x_cat)
+
 		score_feature = self.avgpool(score_feature)
 		score_feature = score_feature.squeeze()
 		score = self.head(score_feature)
@@ -288,7 +291,8 @@ class FusionRegressor(nn.Module):
 			self.fc = nn.Sequential(
 				nn.Linear(fused_input_dim, hidden_dim),
 				nn.ReLU(),
-				nn.Linear(hidden_dim, 1)
+				nn.Linear(hidden_dim, 1),
+				nn.Sigmoid()
 			)
 			print(f"Using simple FC head: {fused_input_dim} -> {hidden_dim} -> 1")
 
@@ -326,9 +330,9 @@ class FusionRegressor(nn.Module):
 				fused = F.interpolate(fused, size=(16, 16), mode='bilinear', align_corners=True)
 
 			# Use ICNetHead for prediction
-			score, quality_map = self.icnet_head(fused)
-			return score, fused
+			score, ic_map = self.icnet_head(fused)
+			return score, fused, ic_map
 		else:
 			# Use simple FC head
 			score = self.fc(fused).squeeze(-1)
-			return score, fused
+			return score, fused, None  # No IC map in simple mode
