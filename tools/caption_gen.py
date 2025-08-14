@@ -4,12 +4,13 @@ Description: Generate captions for images using Florence-2 and update IC9600 tra
 Date: 2025-08-13
 """
 import os
+from tqdm import tqdm
 from PIL import Image
 import torch
 from transformers import AutoModelForCausalLM, AutoProcessor
 
 # Paths
-dataset_dir = "IC9600"
+dataset_dir = "../data/IC9600"
 images_dir = os.path.join(dataset_dir, "images")
 
 # Florence-2 model and processor
@@ -22,7 +23,7 @@ model = AutoModelForCausalLM.from_pretrained(
 ).to(device)
 processor = AutoProcessor.from_pretrained("microsoft/Florence-2-large", trust_remote_code=True)
 
-def generate_caption(image_path, task_prompt: str = "<MORE_DETAILED_CAPTION>", text_input: str | None = None) -> str:
+def generate_caption(image_path, task_prompt: str = "<CAPTION>", text_input: str | None = None) -> str:
 	image = Image.open(image_path).convert("RGB")
 	prompt = task_prompt if text_input is None else task_prompt + text_input
 	inputs = processor(text=prompt, images=image, return_tensors="pt").to(device, torch_dtype)
@@ -57,8 +58,8 @@ def process_txt_file(txt_path):
 		lines = f.readlines()
 
 	new_lines = []
-	for line in lines:
-		parts = line.strip().split()
+	for line in tqdm(lines, desc=f"Captions: {os.path.basename(txt_path)}", unit="img"):
+		parts = line.replace("\n", "").split("  ")
 		if len(parts) < 2:
 			print(f"Skip invalid line: {line.strip()}")
 			continue
@@ -70,7 +71,7 @@ def process_txt_file(txt_path):
 			caption = "Image not found"
 		else:
 			try:
-				caption = generate_caption(img_path)
+				caption = generate_caption(img_path).replace("\n", "").replace("\r", "")
 			except Exception as e:
 				print(f"Failed to generate caption: {e}")
 				caption = "Caption Error"
@@ -82,6 +83,6 @@ def process_txt_file(txt_path):
 
 # Process both train.txt and val.txt
 process_txt_file(os.path.join(dataset_dir, "train.txt"))
-process_txt_file(os.path.join(dataset_dir, "val.txt"))
+process_txt_file(os.path.join(dataset_dir, "test.txt"))
 
 print("Processing complete!")

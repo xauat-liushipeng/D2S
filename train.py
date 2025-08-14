@@ -4,7 +4,10 @@ Description: Training entrypoint for D2S; training/validation loops, checkpointi
 Date: 2025-08-13
 """
 import os
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+
 import argparse
+import time
 import torch
 from torch.utils.data import DataLoader
 from torchvision import transforms
@@ -18,124 +21,204 @@ from d2s.config import load_config
 
 
 def create_transforms(image_size: int, is_training: bool = True):
-	"""Create image transforms"""
+	"""
+	Create image transforms for data preprocessing
+	
+	Args:
+		image_size (int): Target image size for resizing
+		is_training (bool): Whether this is for training (adds augmentation)
+	
+	Returns:
+		transforms.Compose: Composed transform pipeline
+	"""
 	base_transforms = [
-		transforms.Resize((image_size, image_size)),
-		transforms.ToTensor(),
-		transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+		transforms.Resize((image_size, image_size)),  # Resize to target dimensions
+		transforms.ToTensor(),                        # Convert PIL to tensor
+		transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # ImageNet normalization
 	]
 	
 	if is_training:
-		base_transforms.insert(1, transforms.RandomHorizontalFlip())
+		base_transforms.insert(1, transforms.RandomHorizontalFlip())  # Add horizontal flip for training
 	
 	return transforms.Compose(base_transforms)
 
 
 def train_one_epoch(model, dataloader, optimizer, loss_fn, device):
-	model.train()
+	"""
+	Train the model for one epoch
+	
+	Args:
+		model: The neural network model
+		dataloader: Training data loader
+		optimizer: Optimizer for updating model parameters
+		loss_fn: Loss function
+		device: Device to run training on (CPU/GPU)
+	
+	Returns:
+		tuple: (avg_loss, avg_mse, avg_ib, srcc, plcc) - Average losses and correlation metrics
+	"""
+	model.train()  # Set model to training mode
 	total_loss, total_mse, total_ib = 0, 0, 0
 	all_preds, all_scores = [], []
 	
-	for batch in dataloader:
-		images = batch["image"].to(device)
-		input_ids = batch["input_ids"].to(device)
-		attn_mask = batch["attention_mask"].to(device)
-		scores = batch["score"].to(device)
+	# Record start time for this epoch
+	epoch_start_time = time.time()
+	
+	for iter_idx, batch in enumerate(dataloader):
+		# Record start time for this iteration
+		iter_start_time = time.time()
+		
+		# Move batch data to device
+		images = batch["image"].to(device)           # Image tensors
+		input_ids = batch["input_ids"].to(device)    # Tokenized text input IDs
+		attn_mask = batch["attention_mask"].to(device)  # Attention mask for text
+		scores = batch["score"].to(device)           # Ground truth quality scores
 
+		# Forward pass: get predictions and features
 		preds, feats = model(images, input_ids, attn_mask)
+		
+		# Compute loss components (total loss, MSE loss, Information Bottleneck loss)
 		loss, mse_val, ib_val = loss_fn(preds, scores, feats)
 
-		optimizer.zero_grad()
-		loss.backward()
-		optimizer.step()
+		# Backward pass and optimization
+		optimizer.zero_grad()  # Clear previous gradients
+		loss.backward()         # Compute gradients
+		optimizer.step()        # Update model parameters
 
+		# Accumulate losses for epoch average
 		total_loss += loss.item()
 		total_mse += mse_val
 		total_ib += ib_val
 		
-		# Collect predictions and labels to compute correlations
-		all_preds.extend(preds.cpu().numpy())
-		all_scores.extend(scores.cpu().numpy())
+		# Collect predictions and labels for correlation computation
+		all_preds.extend(preds.detach().cpu().numpy())
+		all_scores.extend(scores.detach().cpu().numpy())
+		
+		# Calculate iteration time and estimated total time
+		iter_time = time.time() - iter_start_time
+		elapsed_time = time.time() - epoch_start_time
+		avg_iter_time = elapsed_time / (iter_idx + 1)
+		remaining_iters = len(dataloader) - (iter_idx + 1)
+		estimated_remaining_time = remaining_iters * avg_iter_time
+		total_estimated_time = elapsed_time + estimated_remaining_time
+		
+		# Print training progress for each iteration
+		print(f"  Iter [{iter_idx+1:3d}/{len(dataloader):3d}] | "
+			  f"Loss: {loss.item():.4f} | MSE: {mse_val:.4f} | IB: {ib_val:.6f} | "
+			  f"Time: {iter_time:.3f}s | ETA: {estimated_remaining_time:.1f}s | "
+			  f"Total ETA: {total_estimated_time:.1f}s")
 
 	n = len(dataloader)
-	# Compute SRCC and PLCC correlations
+	# Compute correlation metrics (Spearman's Rank Correlation Coefficient and Pearson's Linear Correlation Coefficient)
 	srcc, plcc = compute_srcc_plcc(all_preds, all_scores)
 	
 	return total_loss / n, total_mse / n, total_ib / n, srcc, plcc
 
 
 def validate(model, dataloader, loss_fn, device):
-	model.eval()
+	"""
+	Validate the model on validation dataset
+	
+	Args:
+		model: The neural network model
+		dataloader: Validation data loader
+		loss_fn: Loss function
+		device: Device to run validation on (CPU/GPU)
+	
+	Returns:
+		tuple: (avg_loss, avg_mse, avg_ib, srcc, plcc) - Average losses and correlation metrics
+	"""
+	model.eval()  # Set model to evaluation mode
 	total_loss, total_mse, total_ib = 0, 0, 0
 	all_preds, all_scores = [], []
 	
-	with torch.no_grad():
+	# Record start time for validation
+	val_start_time = time.time()
+	
+	with torch.no_grad():  # Disable gradient computation for validation
 		for batch in dataloader:
+			# Move batch data to device
 			images = batch["image"].to(device)
 			input_ids = batch["input_ids"].to(device)
 			attn_mask = batch["attention_mask"].to(device)
 			scores = batch["score"].to(device)
 
+			# Forward pass: get predictions and features
 			preds, feats = model(images, input_ids, attn_mask)
+			
+			# Compute loss components
 			loss, reg_loss, ib_loss = loss_fn(preds, scores, feats)
 
+			# Accumulate losses
 			total_loss += loss.item()
 			total_mse += reg_loss
 			total_ib += ib_loss
 			
-			# Collect predictions and labels to compute correlations
-			all_preds.extend(preds.cpu().numpy())
-			all_scores.extend(scores.cpu().numpy())
+			# Collect predictions and labels for correlation computation
+			all_preds.extend(preds.detach().cpu().numpy())
+			all_scores.extend(scores.detach().cpu().numpy())
 
 	n = len(dataloader)
-	# Compute SRCC and PLCC correlations
+	# Compute correlation metrics
 	srcc, plcc = compute_srcc_plcc(all_preds, all_scores)
 	
-	return total_loss / n, total_mse / n, total_ib / n, srcc, plcc
+	# Calculate validation time
+	val_time = time.time() - val_start_time
+	
+	return total_loss / n, total_mse / n, total_ib / n, srcc, plcc, val_time
 
 
 def main():
-	parser = argparse.ArgumentParser(description="D2S Training")
-	parser.add_argument("--config", type=str, default="config/base.yaml", help="Path to config file")
-	parser.add_argument("--image_size", type=int, help="Override image size from config")
+	"""
+	Main training function that orchestrates the entire training process
+	"""
+	# Parse command line arguments
+	parser = argparse.ArgumentParser(description="D2S Training - Image Quality Assessment Model")
+	parser.add_argument("--config", type=str, default="config/base.yaml", 
+					   help="Path to configuration file")
+	parser.add_argument("--image_size", type=int, 
+					   help="Override image size from configuration file")
 	args = parser.parse_args()
 
-	# Load config
+	# Load and validate configuration
 	try:
 		config = load_config(args.config)
 		
-		# Override image_size from CLI if provided
+		# Override image_size from command line if provided
 		if args.image_size:
 			config.dataset.image_size = args.image_size
+			print(f"Overriding image size to: {args.image_size}")
 		
-		# Validate config
+		# Validate configuration parameters
 		if not config.validate():
-			print("Config validation failed. Exit.")
+			print("Configuration validation failed. Exiting.")
 			return
 		
-		# Print config summary
+		# Print configuration summary
 		config.print_summary()
 		
 	except Exception as e:
-		print(f"Failed to load config: {e}")
+		print(f"Failed to load configuration: {e}")
 		return
 
-	# Get device
+	# Determine device (GPU if available, otherwise CPU)
 	device = config.get_device()
-	print(f"Device: {device}")
+	print(f"Using device: {device}")
 
-	# Create transforms
+	# Create image transforms for training and validation
 	train_transform = create_transforms(config.dataset.image_size, is_training=True)
 	val_transform = create_transforms(config.dataset.image_size, is_training=False)
+	print(f"Image transforms created for size: {config.dataset.image_size}x{config.dataset.image_size}")
 
-	# Data loading
+	# Load tokenizer for text processing
 	try:
 		tokenizer = AutoTokenizer.from_pretrained(config.model.text_model_name)
-		print(f"Loaded tokenizer: {config.model.text_model_name}")
+		print(f"Successfully loaded tokenizer: {config.model.text_model_name}")
 	except Exception as e:
 		print(f"Failed to load tokenizer: {e}")
 		return
 
+	# Load training and validation datasets
 	try:
 		train_dataset = IC9600Caption(
 			config.dataset.train_file, 
@@ -152,68 +235,116 @@ def main():
 			config.dataset.max_length
 		)
 		
+		# Create data loaders with specified batch size
 		train_loader = DataLoader(train_dataset, batch_size=config.train.batch_size, shuffle=True)
 		val_loader = DataLoader(val_dataset, batch_size=config.train.batch_size, shuffle=False)
 		
-		print(f"Datasets loaded: train={len(train_dataset)} samples, val={len(val_dataset)} samples")
+		print(f"Datasets loaded successfully:")
+		print(f"  Training: {len(train_dataset)} samples, {len(train_loader)} batches")
+		print(f"  Validation: {len(val_dataset)} samples, {len(val_loader)} batches")
 		
 	except Exception as e:
 		print(f"Failed to load datasets: {e}")
 		return
 
-	# Create model
+	# Create and initialize the model
 	try:
 		model = FusionRegressor(
-			config.model.vision_model_name,
-			config.model.text_model_name,
-			config.model.hidden_dim
+			config.model.vision_model_name,    # Vision encoder (e.g., ViT, ResNet)
+			config.model.text_model_name,      # Text encoder (e.g., BERT, RoBERTa)
+			config.model.hidden_dim            # Hidden dimension for fusion
 		).to(device)
-		print(f"Model created: {config.model.vision_model_name} + {config.model.text_model_name}")
+		print(f"Model created successfully:")
+		print(f"  Vision encoder: {config.model.vision_model_name}")
+		print(f"  Text encoder: {config.model.text_model_name}")
+		print(f"  Hidden dimension: {config.model.hidden_dim}")
 	except Exception as e:
 		print(f"Failed to create model: {e}")
 		return
 
-	# Optimizer and loss
+	# Initialize optimizer and loss function
 	optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.lr)
 	loss_fn = MSE_IB_Loss(beta=config.train.beta)
+	print(f"Optimizer: AdamW with learning rate {config.train.lr}")
+	print(f"Loss function: MSE + Information Bottleneck (β={config.train.beta})")
 
-	# Training loop
-	print(f"\nStart training for {config.train.epochs} epochs...")
-	best_val_loss = float('inf')
+	# Main training loop
+	print(f"\n{'='*60}")
+	print(f"Starting training for {config.train.epochs} epochs...")
+	print(f"{'='*60}")
+	
+	best_val_loss = float('inf')  # Track best validation loss for model saving
+	total_training_start_time = time.time()  # Record overall training start time
 	
 	for epoch in range(config.train.epochs):
-		# Train
+		epoch_start_time = time.time()
+		print(f"\nEpoch [{epoch+1:2d}/{config.train.epochs:2d}] {'='*50}")
+		
+		# Training phase
+		print(f"Training phase...")
 		train_loss, train_mse, train_ib, train_srcc, train_plcc = train_one_epoch(
 			model, train_loader, optimizer, loss_fn, device
 		)
 		
-		# Validate
-		val_loss, val_mse, val_ib, val_srcc, val_plcc = validate(
+		# Calculate training time for this epoch
+		train_time = time.time() - epoch_start_time
+		
+		# Validation phase
+		print(f"Validation phase...")
+		val_loss, val_mse, val_ib, val_srcc, val_plcc, val_time = validate(
 			model, val_loader, loss_fn, device
 		)
-
-		# Logs
-		print(f"Epoch [{epoch+1}/{config.train.epochs}]")
-		print(f"  Train Loss: {train_loss:.4f} | MSE: {train_mse:.4f} | IB: {train_ib:.6f} | SRCC: {train_srcc:.4f} | PLCC: {train_plcc:.4f}")
-		print(f"  Val   Loss: {val_loss:.4f} | MSE: {val_mse:.4f} | IB: {val_ib:.6f} | SRCC: {val_srcc:.4f} | PLCC: {val_plcc:.4f}")
 		
-		# Save best checkpoint
+		# Calculate total epoch time
+		epoch_total_time = time.time() - epoch_start_time
+		
+		# Calculate estimated total training time
+		elapsed_total_time = time.time() - total_training_start_time
+		avg_epoch_time = elapsed_total_time / (epoch + 1)
+		remaining_epochs = config.train.epochs - (epoch + 1)
+		estimated_remaining_total_time = remaining_epochs * avg_epoch_time
+		total_estimated_time = elapsed_total_time + estimated_remaining_total_time
+
+		# Print comprehensive epoch results
+		print(f"\nEpoch [{epoch+1:2d}/{config.train.epochs:2d}] Results:")
+		print(f"  Training:")
+		print(f"    Loss: {train_loss:.4f} | MSE: {train_mse:.4f} | IB: {train_ib:.6f}")
+		print(f"    SRCC: {train_srcc:.4f} | PLCC: {train_plcc:.4f}")
+		print(f"    Time: {train_time:.2f}s")
+		print(f"  Validation:")
+		print(f"    Loss: {val_loss:.4f} | MSE: {val_mse:.4f} | IB: {val_ib:.6f}")
+		print(f"    SRCC: {val_srcc:.4f} | PLCC: {val_plcc:.4f}")
+		print(f"    Time: {val_time:.2f}s")
+		print(f"  Epoch Total Time: {epoch_total_time:.2f}s")
+		print(f"  Overall Progress: {elapsed_total_time/3600:.1f}h elapsed, "
+			  f"ETA: {estimated_remaining_total_time/3600:.1f}h remaining, "
+			  f"Total ETA: {total_estimated_time/3600:.1f}h")
+		
+		# Save best model based on validation loss
 		if val_loss < best_val_loss:
 			best_val_loss = val_loss
 			checkpoint_path = config.get_checkpoint_path(epoch+1, is_best=True)
 			save_checkpoint(model, optimizer, epoch+1, checkpoint_path)
-			print(f"  ✓ Saved best model: {checkpoint_path}")
+			print(f"  ✓ New best model saved: {checkpoint_path}")
 		
-		# Periodic checkpoint
+		# Periodic checkpoint saving
 		if (epoch + 1) % config.train.save_interval == 0:
 			checkpoint_path = config.get_checkpoint_path(epoch+1, is_best=False)
 			save_checkpoint(model, optimizer, epoch+1, checkpoint_path)
-			print(f"  ✓ Saved checkpoint: {checkpoint_path}")
+			print(f"  ✓ Periodic checkpoint saved: {checkpoint_path}")
 
-	# Save final model
+	# Training completed - save final model
 	final_checkpoint_path = config.get_final_checkpoint_path()
 	save_checkpoint(model, optimizer, config.train.epochs, final_checkpoint_path)
-	print(f"\n✓ Training complete. Final model saved to: {final_checkpoint_path}")
+	
+	# Calculate total training time
+	total_training_time = time.time() - total_training_start_time
+	
+	print(f"\n{'='*60}")
+	print(f"Training completed successfully!")
+	print(f"Total training time: {total_training_time/3600:.2f} hours ({total_training_time:.0f} seconds)")
+	print(f"Final model saved to: {final_checkpoint_path}")
+	print(f"{'='*60}")
 
 
 if __name__ == "__main__":
