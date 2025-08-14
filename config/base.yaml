@@ -12,27 +12,27 @@ model:
   text_model_name: "bert-base-uncased"
   hidden_dim: 512               # Fusion layer hidden dimension
   pretrained: true              # Whether to use pretrained weights
-  use_icnet_head: true          # Use ICNetHead instead of simple FC head
+  use_icnet_head: false          # Use ICNetHead instead of simple FC head
 
 # Training configuration
 train:
   device: "cuda"                # cuda or cpu
-  batch_size: 16
+  batch_size: 64
 
   epochs: 30
-  warm: 1                       # Warm-up epochs
+  warm: 0                       # Warm-up epochs
 
-  lr: 0.05                      # Initial learning rate
+  lr: 0.001                      # Initial learning rate
   lr_decay_rate: 0.2            # Learning rate decay rate
   weight_decay: 0.0001          # L2 regularization
   milestones: [10, 20]          # Learning rate milestones
 
   lambda: 0.0000                # Information bottleneck weight
 
-  save_interval: 10             # Interval (epochs) to save checkpoints
+  save_interval: 1             # Interval (epochs) to save checkpoints
   checkpoint_dir: "checkpoints" # Checkpoint directory
 
 # Validation configuration
 val:
-  batch_size: 32
+  batch_size: 64
   checkpoint: "fusion_regressor.pth"  # Checkpoint path

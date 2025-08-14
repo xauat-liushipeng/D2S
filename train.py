@@ -344,7 +344,7 @@ def main():
 		# Calculate training time for this epoch
 		train_time = time.time() - epoch_start_time
 
-		if epoch >= config.train.warm:
+		if epoch > config.train.warm:
 			scheduler.step(epoch)
 
 		# Validation phase

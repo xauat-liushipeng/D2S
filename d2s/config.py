@@ -43,7 +43,7 @@ class TrainConfig:
 	lr_decay_rate: float = 0.2
 	weight_decay: float = 1e-3
 	milestone = [10, 20]  #
-	Lambda: float = 0.0001
+	Lambda: float = 0.0000
 	device: str = "cuda"
 	save_interval: int = 10
 	checkpoint_dir: str = "checkpoints"

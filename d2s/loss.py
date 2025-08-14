@@ -12,7 +12,7 @@ class MSE_IB_Loss(nn.Module):
 		beta: Information bottleneck regularization weight
 		"""
 		super().__init__()
-		self.beta = Lambda
+		self.Lambda = Lambda
 		self.mse = nn.MSELoss()
 
 	def forward(self, preds, labels, fused_feats):
