@@ -30,6 +30,7 @@ class ModelConfig:
 	text_model_name: str = "bert-base-uncased"
 	hidden_dim: int = 512
 	pretrained: bool = True
+	use_icnet_head: bool = False  # Whether to use ICNetHead instead of simple FC head
 
 
 @dataclass
@@ -37,8 +38,12 @@ class TrainConfig:
 	"""Training configuration"""
 	batch_size: int = 16
 	epochs: int = 10
+	warm: int = 1
 	lr: float = 0.0001
-	beta: float = 0.0001
+	lr_decay_rate: float = 0.2
+	weight_decay: float = 1e-3
+	milestone = [10, 20]  #
+	Lambda: float = 0.0001
 	device: str = "cuda"
 	save_interval: int = 10
 	checkpoint_dir: str = "checkpoints"
@@ -147,12 +152,17 @@ class Config:
 				'text_model_name': self.model.text_model_name,
 				'hidden_dim': self.model.hidden_dim,
 				'pretrained': self.model.pretrained,
+				'use_icnet_head': self.model.use_icnet_head,
 			},
 			'train': {
 				'batch_size': self.train.batch_size,
 				'epochs': self.train.epochs,
 				'lr': self.train.lr,
-				'beta': self.train.beta,
+				'lr_decay_rate': self.train.lr_decay_rate,
+				'weight_decay': self.train.weight_decay,
+				'milestone': self.train.milestone,
+				'warm': self.train.warm,
+				'Lambda': self.train.Lambda,
 				'device': self.train.device,
 				'save_interval': self.train.save_interval,
 				'checkpoint_dir': self.train.checkpoint_dir,
@@ -200,8 +210,8 @@ class Config:
 		if self.train.lr <= 0:
 			errors.append(f"Learning rate must be > 0: {self.train.lr}")
 		
-		if self.train.beta < 0:
-			errors.append(f"Beta must not be negative: {self.train.beta}")
+		if self.train.Lambda < 0:
+			errors.append(f"Lambda must not be negative: {self.train.Lambda}")
 		
 		# Model checks
 		if self.model.hidden_dim <= 0:
@@ -253,13 +263,18 @@ class Config:
 		print(f"  Text: {self.model.text_model_name}")
 		print(f"  Hidden dim: {self.model.hidden_dim}")
 		print(f"  Pretrained: {self.model.pretrained}")
-		
+		print(f"  Use ICNetHead: {self.model.use_icnet_head}")
+
 		print(f"\nTrain:")
+		print(f"  Device: {self.train.device}")
 		print(f"  Batch size: {self.train.batch_size}")
 		print(f"  Epochs: {self.train.epochs}")
+		print(f"  Warm epochs: {self.train.warm}")
 		print(f"  LR: {self.train.lr}")
-		print(f"  Beta: {self.train.beta}")
-		print(f"  Device: {self.train.device}")
+		print(f"  LR decay rate: {self.train.lr_decay_rate}")
+		print(f"  Weight decay: {self.train.weight_decay}")
+		print(f"  Milestone: {self.train.milestone}")
+		print(f"  Lambda: {self.train.Lambda}")
 		print(f"  Save interval: {self.train.save_interval}")
 		print(f"  Checkpoint dir: {self.train.checkpoint_dir}")
 		

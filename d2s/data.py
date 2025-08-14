@@ -156,27 +156,33 @@ class IC9600Caption(Dataset):
 			if self.transform:
 				img = self.transform(img)
 
-			# Tokenizer on caption
-			try:
-				encoding = self.tokenizer(
-					caption,
-					padding="max_length",
-					truncation=True,
-					max_length=self.max_length,
-					return_tensors="pt"
-				)
-			except Exception as e:
-				print(f"Warning: Tokenizer failed: {e}")
-				# fallback encoding
-				encoding = {
-					"input_ids": torch.zeros(self.max_length, dtype=torch.long),
-					"attention_mask": torch.zeros(self.max_length, dtype=torch.long)
-				}
+			# Handle tokenization based on whether tokenizer is available
+			if self.tokenizer is not None:
+				# Text mode: tokenize caption
+				try:
+					encoding = self.tokenizer(
+						caption,
+						padding="max_length",
+						truncation=True,
+						max_length=self.max_length,
+						return_tensors="pt"
+					)
+					input_ids = encoding["input_ids"].squeeze(0)
+					attention_mask = encoding["attention_mask"].squeeze(0)
+				except Exception as e:
+					print(f"Warning: Tokenizer failed: {e}")
+					# fallback encoding
+					input_ids = torch.zeros(self.max_length, dtype=torch.long)
+					attention_mask = torch.zeros(self.max_length, dtype=torch.long)
+			else:
+				# Text-free mode: create dummy text inputs
+				input_ids = torch.zeros(self.max_length, dtype=torch.long)
+				attention_mask = torch.zeros(self.max_length, dtype=torch.long)
 
 			return {
 				"image": img,
-				"input_ids": encoding["input_ids"].squeeze(0),
-				"attention_mask": encoding["attention_mask"].squeeze(0),
+				"input_ids": input_ids,
+				"attention_mask": attention_mask,
 				"score": torch.tensor(score, dtype=torch.float32),
 				"image_name": img_name
 			}

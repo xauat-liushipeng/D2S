@@ -31,3 +31,26 @@ def run_example(task_prompt, text_input=None):
 if __name__ == "__main__":
 	prompt = "<MORE_DETAILED_CAPTION>"
 	run_example(prompt)
+
+	"""
+	000005.jpg
+	
+	{'<MORE_DETAILED_CAPTION>': 
+	'The image shows a room with a wooden archway in the center. 
+	The archway is made of dark wood and has a clock on top. 
+	On the right side of the archway, there is a wooden dresser with a mirror above it. 
+	On top of the dresser, there are several cardboard boxes stacked on top of each other. 
+	In the center of the room, there appears to be a dining area with a table and chairs. 
+	The walls are painted in a light blue color and there are floral wallpaper on the windows. 
+	The floor is covered with a blue and white patterned rug. 
+	There are also a few other items scattered around the room.'}
+
+	{'<DETAILED_CAPTION>': 
+	'The image shows a living room filled with furniture, including a desk, chair, and cabinetry. 
+	There are cardboard boxes, shirts, and other objects scattered around the room, as well as a clock on the wall. 
+	The room also has windows with curtains, a chandelier, and a carpet on the floor.'}
+
+	{'<CAPTION>': 
+	'A living room filled with lots of boxes and furniture.'}
+
+	"""

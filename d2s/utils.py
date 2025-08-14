@@ -7,6 +7,8 @@ import os
 import torch
 import numpy as np
 from scipy.stats import spearmanr, pearsonr
+from torch.optim.lr_scheduler import _LRScheduler
+
 
 def save_checkpoint(model, optimizer, epoch, path):
 	ckpt = {
@@ -37,28 +39,39 @@ def compute_srcc_plcc(preds, labels):
 		# Check for empty arrays
 		if len(preds) == 0 or len(labels) == 0:
 			print("Warning: Empty predictions or labels array")
-			return 0.0, 0.0
+			return 0.0, 0.0, 0.0, 0.0
 		
 		# Check for NaNs
 		if np.isnan(preds).any() or np.isnan(labels).any():
 			print("Warning: NaN values detected in predictions or labels")
-			return 0.0, 0.0
+			return 0.0, 0.0, 0.0, 0.0
 		
 		# Zero variance guard (correlations would be undefined)
 		if np.std(preds) == 0 or np.std(labels) == 0:
 			print("Warning: Zero variance in predictions or labels")
-			return 0.0, 0.0
-		
-		srcc = spearmanr(preds, labels)[0]
+			return 0.0, 0.0, 0.0, 0.0
+
 		plcc = pearsonr(preds, labels)[0]
-		
+		srcc = spearmanr(preds, labels)[0]
+		rmse = np.sqrt(np.mean(np.abs(preds - labels) ** 2))
+		rmae = np.sqrt(np.abs(preds - labels).mean())
+
 		# Check for NaN correlations
 		if np.isnan(srcc) or np.isnan(plcc):
 			print("Warning: NaN correlation coefficients computed")
-			return 0.0, 0.0
+			return 0.0, 0.0, 0.0, 0.0
 			
-		return srcc, plcc
+		return srcc, plcc, rmse, rmae
 		
 	except Exception as e:
 		print(f"Error computing correlation coefficients: {e}")
-		return 0.0, 0.0
+		return 0.0, 0.0, 0.0, 0.0
+
+
+class WarmUpLR(_LRScheduler):
+	def __init__(self, optimizer, total_iters, last_epoch=-1):
+		self.total_iters = total_iters
+		super().__init__(optimizer, last_epoch)
+
+	def get_lr(self):
+		return [base_lr * self.last_epoch / (self.total_iters + 1e-8) for base_lr in self.base_lrs]

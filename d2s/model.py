@@ -245,24 +245,90 @@ class CaptionEncoder(nn.Module):
 class FusionRegressor(nn.Module):
 	"""
 	Fusion model: image encoder + text encoder -> regression score
+	Supports text-free mode when text_model_name is empty string
+	Supports ICNetHead mode when use_icnet_head is True
 	"""
 
-	def __init__(self, vision_model_name, text_model_name, hidden_dim=512):
+	def __init__(self, vision_model_name, text_model_name, hidden_dim=512, use_icnet_head=False):
 		super().__init__()
-		# Build encoders
+		# Build vision encoder
 		self.vision_encoder = VisionEncoder(vision_model_name)
-		self.text_encoder = CaptionEncoder(text_model_name)
 
-		fused_input_dim = self.vision_encoder.out_dim + self.text_encoder.out_dim
-		self.fc = nn.Sequential(
-			nn.Linear(fused_input_dim, hidden_dim),
-			nn.ReLU(),
-			nn.Linear(hidden_dim, 1)
-		)
+		# Check if text branch is needed
+		self.use_text = text_model_name and text_model_name.strip() != ""
 
-	def forward(self, images, input_ids, attention_mask):
+		if self.use_text:
+			# Build text encoder for multimodal mode
+			self.text_encoder = CaptionEncoder(text_model_name)
+			fused_input_dim = self.vision_encoder.out_dim + self.text_encoder.out_dim
+		else:
+			# Text-free mode: only vision features
+			self.text_encoder = None
+			fused_input_dim = self.vision_encoder.out_dim
+			print(f"Text-free mode: using only vision encoder '{vision_model_name}'")
+
+		# Choose between ICNetHead and simple FC head
+		self.use_icnet_head = use_icnet_head
+
+		if use_icnet_head:
+			# Use ICNetHead for more sophisticated feature processing
+			# Note: ICNetHead expects 256*2 channels input, so we need to project features
+			if fused_input_dim != 512:  # 256 * 2 = 512
+				self.feature_proj = nn.Linear(fused_input_dim, 512)
+				print(f"Using ICNetHead: projecting features from {fused_input_dim} to 512")
+			else:
+				self.feature_proj = None
+				print(f"Using ICNetHead: features already have correct dimension (512)")
+
+			self.icnet_head = ICNetHead()
+		else:
+			# Use simple FC head
+			self.feature_proj = None
+			self.icnet_head = None
+			self.fc = nn.Sequential(
+				nn.Linear(fused_input_dim, hidden_dim),
+				nn.ReLU(),
+				nn.Linear(hidden_dim, 1)
+			)
+			print(f"Using simple FC head: {fused_input_dim} -> {hidden_dim} -> 1")
+
+	def forward(self, images, input_ids=None, attention_mask=None):
+		# Extract vision features
 		img_feats = self.vision_encoder(images)
-		txt_feats = self.text_encoder(input_ids, attention_mask)
-		fused = torch.cat([img_feats, txt_feats], dim=-1)
-		score = self.fc(fused).squeeze(-1)
-		return score, fused
+
+		if self.use_text:
+			# Multimodal mode: combine vision and text features
+			if input_ids is None or attention_mask is None:
+				raise ValueError("Text inputs required in multimodal mode")
+			txt_feats = self.text_encoder(input_ids, attention_mask)
+			fused = torch.cat([img_feats, txt_feats], dim=-1)
+		else:
+			# Text-free mode: use only vision features
+			fused = img_feats
+
+		# Choose prediction head
+		if self.use_icnet_head:
+			# Use ICNetHead: need to reshape features to spatial format
+			if self.feature_proj:
+				fused = self.feature_proj(fused)
+
+			# Reshape features to spatial format for ICNetHead
+			# ICNetHead expects [B, C, H, W] format
+			batch_size = fused.shape[0]
+			# Reshape to approximate spatial dimensions (e.g., 16x16 for 256 features)
+			spatial_size = int((fused.shape[1] // 2) ** 0.5)
+			if spatial_size * spatial_size * 2 <= fused.shape[1]:
+				# Can reshape to square spatial format
+				fused = fused.view(batch_size, 2, spatial_size, spatial_size)
+			else:
+				# Fallback: reshape to 1x1 spatial format and interpolate
+				fused = fused.view(batch_size, fused.shape[1], 1, 1)
+				fused = F.interpolate(fused, size=(16, 16), mode='bilinear', align_corners=True)
+
+			# Use ICNetHead for prediction
+			score, quality_map = self.icnet_head(fused)
+			return score, fused
+		else:
+			# Use simple FC head
+			score = self.fc(fused).squeeze(-1)
+			return score, fused

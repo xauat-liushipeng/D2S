@@ -9,6 +9,7 @@ os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 import argparse
 import time
 import torch
+from torch import optim
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from transformers import AutoTokenizer
@@ -16,7 +17,7 @@ from transformers import AutoTokenizer
 from d2s.model import FusionRegressor
 from d2s.data import IC9600Caption
 from d2s.loss import MSE_IB_Loss
-from d2s.utils import save_checkpoint, compute_srcc_plcc
+from d2s.utils import save_checkpoint, compute_srcc_plcc, WarmUpLR
 from d2s.config import load_config
 
 
@@ -70,12 +71,17 @@ def train_one_epoch(model, dataloader, optimizer, loss_fn, device):
 		
 		# Move batch data to device
 		images = batch["image"].to(device)           # Image tensors
-		input_ids = batch["input_ids"].to(device)    # Tokenized text input IDs
-		attn_mask = batch["attention_mask"].to(device)  # Attention mask for text
 		scores = batch["score"].to(device)           # Ground truth quality scores
 
 		# Forward pass: get predictions and features
-		preds, feats = model(images, input_ids, attn_mask)
+		if hasattr(model, 'use_text') and model.use_text:
+			# Multimodal mode: include text inputs
+			input_ids = batch["input_ids"].to(device)    # Tokenized text input IDs
+			attn_mask = batch["attention_mask"].to(device)  # Attention mask for text
+			preds, feats = model(images, input_ids, attn_mask)
+		else:
+			# Text-free mode: only vision inputs
+			preds, feats = model(images)
 		
 		# Compute loss components (total loss, MSE loss, Information Bottleneck loss)
 		loss, mse_val, ib_val = loss_fn(preds, scores, feats)
@@ -110,9 +116,9 @@ def train_one_epoch(model, dataloader, optimizer, loss_fn, device):
 
 	n = len(dataloader)
 	# Compute correlation metrics (Spearman's Rank Correlation Coefficient and Pearson's Linear Correlation Coefficient)
-	srcc, plcc = compute_srcc_plcc(all_preds, all_scores)
+	srcc, plcc, rmse, rmae = compute_srcc_plcc(all_preds, all_scores)
 	
-	return total_loss / n, total_mse / n, total_ib / n, srcc, plcc
+	return total_loss / n, total_mse / n, total_ib / n, srcc, plcc, rmse, rmae
 
 
 def validate(model, dataloader, loss_fn, device):
@@ -139,12 +145,17 @@ def validate(model, dataloader, loss_fn, device):
 		for batch in dataloader:
 			# Move batch data to device
 			images = batch["image"].to(device)
-			input_ids = batch["input_ids"].to(device)
-			attn_mask = batch["attention_mask"].to(device)
 			scores = batch["score"].to(device)
 
 			# Forward pass: get predictions and features
-			preds, feats = model(images, input_ids, attn_mask)
+			if hasattr(model, 'use_text') and model.use_text:
+				# Multimodal mode: include text inputs
+				input_ids = batch["input_ids"].to(device)
+				attn_mask = batch["attention_mask"].to(device)
+				preds, feats = model(images, input_ids, attn_mask)
+			else:
+				# Text-free mode: only vision inputs
+				preds, feats = model(images)
 			
 			# Compute loss components
 			loss, reg_loss, ib_loss = loss_fn(preds, scores, feats)
@@ -160,12 +171,12 @@ def validate(model, dataloader, loss_fn, device):
 
 	n = len(dataloader)
 	# Compute correlation metrics
-	srcc, plcc = compute_srcc_plcc(all_preds, all_scores)
+	srcc, plcc, rmse, rmae = compute_srcc_plcc(all_preds, all_scores)
 	
 	# Calculate validation time
 	val_time = time.time() - val_start_time
 	
-	return total_loss / n, total_mse / n, total_ib / n, srcc, plcc, val_time
+	return total_loss / n, total_mse / n, total_ib / n, srcc, plcc, rmse, rmae, val_time
 
 
 def main():
@@ -211,12 +222,16 @@ def main():
 	print(f"Image transforms created for size: {config.dataset.image_size}x{config.dataset.image_size}")
 
 	# Load tokenizer for text processing
-	try:
-		tokenizer = AutoTokenizer.from_pretrained(config.model.text_model_name)
-		print(f"Successfully loaded tokenizer: {config.model.text_model_name}")
-	except Exception as e:
-		print(f"Failed to load tokenizer: {e}")
-		return
+	tokenizer = None
+	if config.model.text_model_name and config.model.text_model_name.strip() != "":
+		try:
+			tokenizer = AutoTokenizer.from_pretrained(config.model.text_model_name)
+			print(f"Successfully loaded tokenizer: {config.model.text_model_name}")
+		except Exception as e:
+			print(f"Failed to load tokenizer: {e}")
+			return
+	else:
+		print("Text-free mode: no tokenizer needed")
 
 	# Load training and validation datasets
 	try:
@@ -252,21 +267,43 @@ def main():
 		model = FusionRegressor(
 			config.model.vision_model_name,    # Vision encoder (e.g., ViT, ResNet)
 			config.model.text_model_name,      # Text encoder (e.g., BERT, RoBERTa)
-			config.model.hidden_dim            # Hidden dimension for fusion
+			config.model.hidden_dim,           # Hidden dimension for fusion
+			config.model.use_icnet_head        # Whether to use ICNetHead
 		).to(device)
-		print(f"Model created successfully:")
-		print(f"  Vision encoder: {config.model.vision_model_name}")
-		print(f"  Text encoder: {config.model.text_model_name}")
-		print(f"  Hidden dimension: {config.model.hidden_dim}")
+
+		if hasattr(model, 'use_text') and model.use_text:
+			print(f"Model created successfully:")
+			print(f"  Vision encoder: {config.model.vision_model_name}")
+			print(f"  Text encoder: {config.model.text_model_name}")
+			print(f"  Hidden dimension: {config.model.hidden_dim}")
+			print(f"  Use ICNetHead: {config.model.use_icnet_head}")
+		else:
+			print(f"Model created successfully (text-free mode):")
+			print(f"  Vision encoder: {config.model.vision_model_name}")
+			print(f"  Hidden dimension: {config.model.hidden_dim}")
+			print(f"  Use ICNetHead: {config.model.use_icnet_head}")
+
 	except Exception as e:
 		print(f"Failed to create model: {e}")
 		return
 
 	# Initialize optimizer and loss function
-	optimizer = torch.optim.AdamW(model.parameters(), lr=config.train.lr)
-	loss_fn = MSE_IB_Loss(beta=config.train.beta)
+	optimizer = optim.AdamW(
+		model.parameters(),
+		lr=config.train.lr,
+		weight_decay=config.train.weight_decay
+	)
+	scheduler = optim.lr_scheduler.MultiStepLR(
+		optimizer,
+		milestones=config.train.milestone,
+		gamma=config.train.lr_decay_rate)
+	iter_per_epoch = len(train_loader)
+	if config.train.warm > 0:
+		Warmup_scheduler = WarmUpLR(optimizer, iter_per_epoch * config.train.warm)
+
+	loss_fn = MSE_IB_Loss(Lambda=config.train.Lambda)
 	print(f"Optimizer: AdamW with learning rate {config.train.lr}")
-	print(f"Loss function: MSE + Information Bottleneck (β={config.train.beta})")
+	print(f"Loss function: MSE + Information Bottleneck (λ={config.train.Lambda})")
 
 	# Main training loop
 	print(f"\n{'='*60}")
@@ -282,16 +319,19 @@ def main():
 		
 		# Training phase
 		print(f"Training phase...")
-		train_loss, train_mse, train_ib, train_srcc, train_plcc = train_one_epoch(
+		t_loss, t_mse, t_ib, t_srcc, t_plcc, t_rmse, t_rmae = train_one_epoch(
 			model, train_loader, optimizer, loss_fn, device
 		)
-		
+
 		# Calculate training time for this epoch
 		train_time = time.time() - epoch_start_time
-		
+
+		if epoch >= config.train.warm:
+			scheduler.step(epoch)
+
 		# Validation phase
 		print(f"Validation phase...")
-		val_loss, val_mse, val_ib, val_srcc, val_plcc, val_time = validate(
+		v_loss, v_mse, v_ib, v_srcc, v_plcc, v_rmse, v_rmae, v_time = validate(
 			model, val_loader, loss_fn, device
 		)
 		
@@ -308,21 +348,21 @@ def main():
 		# Print comprehensive epoch results
 		print(f"\nEpoch [{epoch+1:2d}/{config.train.epochs:2d}] Results:")
 		print(f"  Training:")
-		print(f"    Loss: {train_loss:.4f} | MSE: {train_mse:.4f} | IB: {train_ib:.6f}")
-		print(f"    SRCC: {train_srcc:.4f} | PLCC: {train_plcc:.4f}")
+		print(f"    Loss: {t_loss:.4f} | MSE: {t_mse:.4f} | IB: {t_ib:.6f}")
+		print(f"    SRCC: {t_srcc:.4f} | PLCC: {t_plcc:.4f} | RMSE: {t_rmse:.4f} | RMAE: {t_rmae:.4f}")
 		print(f"    Time: {train_time:.2f}s")
 		print(f"  Validation:")
-		print(f"    Loss: {val_loss:.4f} | MSE: {val_mse:.4f} | IB: {val_ib:.6f}")
-		print(f"    SRCC: {val_srcc:.4f} | PLCC: {val_plcc:.4f}")
-		print(f"    Time: {val_time:.2f}s")
+		print(f"    Loss: {v_loss:.4f} | MSE: {v_mse:.4f} | IB: {v_ib:.6f}")
+		print(f"    SRCC: {v_srcc:.4f} | PLCC: {v_plcc:.4f} | RMSE: {v_rmse:.4f} | RMAE: {v_rmae:.4f}")
+		print(f"    Time: {v_time:.2f}s")
 		print(f"  Epoch Total Time: {epoch_total_time:.2f}s")
 		print(f"  Overall Progress: {elapsed_total_time/3600:.1f}h elapsed, "
 			  f"ETA: {estimated_remaining_total_time/3600:.1f}h remaining, "
 			  f"Total ETA: {total_estimated_time/3600:.1f}h")
 		
 		# Save best model based on validation loss
-		if val_loss < best_val_loss:
-			best_val_loss = val_loss
+		if v_loss < best_val_loss:
+			best_val_loss = v_loss
 			checkpoint_path = config.get_checkpoint_path(epoch+1, is_best=True)
 			save_checkpoint(model, optimizer, epoch+1, checkpoint_path)
 			print(f"  ✓ New best model saved: {checkpoint_path}")

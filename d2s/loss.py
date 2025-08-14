@@ -7,12 +7,12 @@ import torch
 import torch.nn as nn
 
 class MSE_IB_Loss(nn.Module):
-	def __init__(self, beta=1e-4):
+	def __init__(self, Lambda=1e-4):
 		"""
 		beta: Information bottleneck regularization weight
 		"""
 		super().__init__()
-		self.beta = beta
+		self.beta = Lambda
 		self.mse = nn.MSELoss()
 
 	def forward(self, preds, labels, fused_feats):
@@ -22,7 +22,7 @@ class MSE_IB_Loss(nn.Module):
 		fused_feats: [B, D] fused feature vectors (image_feat + text_feat)
 		"""
 		reg_loss = self.mse(preds, labels)
-		ib_loss = self.beta * torch.mean(torch.sum(fused_feats ** 2, dim=1))
+		ib_loss = self.Lambda * torch.mean(torch.sum(fused_feats ** 2, dim=1))
 
 		total_loss = reg_loss + ib_loss
 		return total_loss, reg_loss.item(), ib_loss.item()

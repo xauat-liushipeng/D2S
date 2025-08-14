@@ -4,26 +4,13 @@ Description: Generate captions for images using Florence-2 and update IC9600 tra
 Date: 2025-08-13
 """
 import os
-from tqdm import tqdm
 from PIL import Image
 import torch
 from transformers import AutoModelForCausalLM, AutoProcessor
+from tqdm import tqdm
 
-# Paths
-dataset_dir = "../data/IC9600"
-images_dir = os.path.join(dataset_dir, "images")
 
-# Florence-2 model and processor
-device = "cuda:0" if torch.cuda.is_available() else "cpu"
-torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-model = AutoModelForCausalLM.from_pretrained(
-	"microsoft/Florence-2-large",
-	torch_dtype=torch_dtype,
-	trust_remote_code=True
-).to(device)
-processor = AutoProcessor.from_pretrained("microsoft/Florence-2-large", trust_remote_code=True)
-
-def generate_caption(image_path, task_prompt: str = "<CAPTION>", text_input: str | None = None) -> str:
+def generate_caption(image_path, task_prompt: str = "<MORE_DETAILED_CAPTION>", text_input: str | None = None) -> str:
 	image = Image.open(image_path).convert("RGB")
 	prompt = task_prompt if text_input is None else task_prompt + text_input
 	inputs = processor(text=prompt, images=image, return_tensors="pt").to(device, torch_dtype)
@@ -59,6 +46,7 @@ def process_txt_file(txt_path):
 
 	new_lines = []
 	for line in tqdm(lines, desc=f"Captions: {os.path.basename(txt_path)}", unit="img"):
+		# Each line format: image_name  score
 		parts = line.replace("\n", "").split("  ")
 		if len(parts) < 2:
 			print(f"Skip invalid line: {line.strip()}")
@@ -81,8 +69,27 @@ def process_txt_file(txt_path):
 	with open(txt_path, "w", encoding="utf-8") as f:
 		f.writelines(new_lines)
 
-# Process both train.txt and val.txt
-process_txt_file(os.path.join(dataset_dir, "train.txt"))
-process_txt_file(os.path.join(dataset_dir, "test.txt"))
+if __name__ == '__main__':
+	# Paths
+	print("Starting caption generation...")
+	dataset_dir = "../data/IC9600"
+	images_dir = os.path.join(dataset_dir, "images")
 
-print("Processing complete!")
+	# Florence-2 model and processor
+	device = "cuda:0" if torch.cuda.is_available() else "cpu"
+	torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+
+	print("Loading Florence-2 model...")
+	model = AutoModelForCausalLM.from_pretrained("microsoft/Florence-2-large", torch_dtype=torch_dtype,
+	                                             trust_remote_code=True).to(device)
+	print("Loading processor...")
+	processor = AutoProcessor.from_pretrained("microsoft/Florence-2-large", trust_remote_code=True)
+
+	# Process both train.txt and test.txt
+	print("Processing train.txt...")
+	process_txt_file(os.path.join(dataset_dir, "train.txt"))
+
+	print("Processing test.txt...")
+	process_txt_file(os.path.join(dataset_dir, "test.txt"))
+
+	print("Processing complete!")
