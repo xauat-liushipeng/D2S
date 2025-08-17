@@ -189,150 +189,129 @@ class ICNetHead(nn.Module):
 		return score, cly_map
 
 
+# =========================
+# Vision Encoder
+# =========================
 class VisionEncoder(nn.Module):
-	"""
-	Vision encoder using timm pre-trained models.
-	Example: vit_base_patch16_224, resnet50, convnext_base, etc.
-	"""
+    """
+    Vision encoder using timm pre-trained models.
+    Example: vit_base_patch16_224, resnet50, convnext_base, etc.
+    """
 
-	def __init__(self, model_name="vit_base_patch16_224", pretrained=True, out_dim=768):
-		super().__init__()
-		self.model = timm.create_model(model_name, pretrained=pretrained)
+    def __init__(self, model_name="vit_base_patch16_224", pretrained=True, out_dim=768):
+        super().__init__()
+        self.model = timm.create_model(model_name, pretrained=pretrained)
 
-		# Try to get feature dimension
-		if hasattr(self.model, "num_features"):
-			feat_dim = self.model.num_features
-		else:
-			feat_dim = out_dim  # fallback
+        # feature dim
+        if hasattr(self.model, "num_features"):
+            feat_dim = self.model.num_features
+        else:
+            feat_dim = out_dim
 
-		# Remove classification head, keep feature extractor
-		if hasattr(self.model, "reset_classifier"):
-			self.model.reset_classifier(0)
-		elif hasattr(self.model, "fc"):  # resnet-style
-			self.model.fc = nn.Identity()
+        # Remove classification head
+        if hasattr(self.model, "reset_classifier"):
+            self.model.reset_classifier(0)
+        elif hasattr(self.model, "fc"):  # resnet-style
+            self.model.fc = nn.Identity()
 
-		self.out_dim = feat_dim
+        self.out_dim = feat_dim
 
-	def forward(self, x):
-		feats = self.model(x)  # [B, feat_dim]
-		return feats
+    def forward(self, x):
+        feats = self.model(x)  # [B, feat_dim]
+        return feats
 
 
+# =========================
+# Caption Encoder
+# =========================
 class CaptionEncoder(nn.Module):
-	"""
-	Text encoder using HuggingFace transformers.
-	Example: bert-base-uncased, roberta-base, distilbert-base-uncased, etc.
-	"""
+    """
+    Text encoder using HuggingFace transformers.
+    Example: bert-base-uncased, roberta-base, distilbert-base-uncased, etc.
+    """
 
-	def __init__(self, model_name="bert-base-uncased", pretrained=True, out_dim=768):
-		super().__init__()
-		self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-		self.model = AutoModel.from_pretrained(model_name) if pretrained else AutoModel.from_config(model_name)
-		self.out_dim = self.model.config.hidden_size
+    def __init__(self, model_name="bert-base-uncased", pretrained=True, out_dim=768):
+        super().__init__()
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name) if pretrained else AutoModel.from_config(model_name)
+        self.out_dim = self.model.config.hidden_size
 
-		# Optional projection to user-defined output dimension
-		if out_dim != self.out_dim:
-			self.proj = nn.Linear(self.out_dim, out_dim)
-			self.out_dim = out_dim
-		else:
-			self.proj = None
+        # Optional projection
+        if out_dim != self.out_dim:
+            self.proj = nn.Linear(self.out_dim, out_dim)
+            self.out_dim = out_dim
+        else:
+            self.proj = None
 
-	def forward(self, input_ids, attention_mask):
-		outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
-		pooled = outputs.last_hidden_state[:, 0]  # [CLS]
-		if self.proj:
-			pooled = self.proj(pooled)
-		return pooled
+    def forward(self, input_ids, attention_mask):
+        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+        pooled = outputs.last_hidden_state[:, 0]  # [CLS]
+        if self.proj:
+            pooled = self.proj(pooled)
+        return pooled
 
 
+# =========================
+# Fusion Regressor
+# =========================
 class FusionRegressor(nn.Module):
-	"""
-	Fusion model: image encoder + text encoder -> regression score
-	Supports text-free mode when text_model_name is empty string
-	Supports ICNetHead mode when use_icnet_head is True
-	"""
+    """
+    Fusion model: image encoder + text encoder -> regression score
+    Includes:
+      - Information Bottleneck (IB) latent z
+      - Entropy computation for alignment loss
+    """
 
-	def __init__(self, vision_model_name, text_model_name, hidden_dim=512, use_icnet_head=False):
-		super().__init__()
-		# Build vision encoder
-		self.vision_encoder = VisionEncoder(vision_model_name)
+    def __init__(self, vision_model_name, text_model_name, hidden_dim=512, z_dim=128):
+        super().__init__()
+        # Vision encoder
+        self.vision_encoder = VisionEncoder(vision_model_name)
 
-		# Check if text branch is needed
-		self.use_text = text_model_name and text_model_name.strip() != ""
+        # Text encoder
+        self.use_text = text_model_name and text_model_name.strip() != ""
+        self.text_encoder = CaptionEncoder(text_model_name)
 
-		if self.use_text:
-			# Build text encoder for multimodal mode
-			self.text_encoder = CaptionEncoder(text_model_name)
-			fused_input_dim = self.vision_encoder.out_dim + self.text_encoder.out_dim
-		else:
-			# Text-free mode: only vision features
-			self.text_encoder = None
-			fused_input_dim = self.vision_encoder.out_dim
-			print(f"Text-free mode: using only vision encoder '{vision_model_name}'")
+        fused_input_dim = self.vision_encoder.out_dim + self.text_encoder.out_dim
 
-		# Choose between ICNetHead and simple FC head
-		self.use_icnet_head = use_icnet_head
+        # IB reparameterization
+        self.to_stats = nn.Linear(fused_input_dim, 2 * z_dim)  # -> mu, logvar
+        self.pred_head = nn.Sequential(
+            nn.Linear(z_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid()
+        )
+        self.z_dim = z_dim
 
-		if use_icnet_head:
-			# Use ICNetHead for more sophisticated feature processing
-			# Note: ICNetHead expects 256*2 channels input, so we need to project features
-			if fused_input_dim != 512:  # 256 * 2 = 512
-				self.feature_proj = nn.Linear(fused_input_dim, 512)
-				print(f"Using ICNetHead: projecting features from {fused_input_dim} to 512")
-			else:
-				self.feature_proj = None
-				print(f"Using ICNetHead: features already have correct dimension (512)")
+    def compute_entropy(self, feats, tau=1.0, eps=1e-8):
+        """Compute entropy over feature dimension."""
+        probs = F.softmax(feats / tau, dim=-1)  # [B, D]
+        log_probs = torch.log(probs + eps)
+        entropy = -torch.sum(probs * log_probs, dim=-1)  # [B]
+        return entropy
 
-			self.icnet_head = ICNetHead()
-		else:
-			# Use simple FC head
-			self.feature_proj = None
-			self.icnet_head = None
-			self.fc = nn.Sequential(
-				nn.Linear(fused_input_dim, hidden_dim),
-				nn.ReLU(),
-				nn.Linear(hidden_dim, 1),
-				nn.Sigmoid()
-			)
-			print(f"Using simple FC head: {fused_input_dim} -> {hidden_dim} -> 1")
+    def forward(self, images, input_ids=None, attention_mask=None):
+        # Vision features
+        img_feats = self.vision_encoder(images)
+        H_v = self.compute_entropy(img_feats)
 
-	def forward(self, images, input_ids=None, attention_mask=None):
-		# Extract vision features
-		img_feats = self.vision_encoder(images)
+        # Text features
+        if not self.use_text or input_ids is None:
+            raise ValueError("Text inputs required in multimodal mode")
+        txt_feats = self.text_encoder(input_ids, attention_mask)
+        H_s = self.compute_entropy(txt_feats)
 
-		if self.use_text:
-			# Multimodal mode: combine vision and text features
-			if input_ids is None or attention_mask is None:
-				raise ValueError("Text inputs required in multimodal mode")
-			txt_feats = self.text_encoder(input_ids, attention_mask)
-			fused = torch.cat([img_feats, txt_feats], dim=-1)
-		else:
-			# Text-free mode: use only vision features
-			fused = img_feats
+        # Fusion
+        fused = torch.cat([img_feats, txt_feats], dim=-1)
 
-		# Choose prediction head
-		if self.use_icnet_head:
-			# Use ICNetHead: need to reshape features to spatial format
-			if self.feature_proj:
-				fused = self.feature_proj(fused)
+        # IB reparameterization
+        stats = self.to_stats(fused)
+        mu, logvar = torch.chunk(stats, 2, dim=-1)
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        z = mu + std * eps
 
-			# Reshape features to spatial format for ICNetHead
-			# ICNetHead expects [B, C, H, W] format
-			batch_size = fused.shape[0]
-			# Reshape to approximate spatial dimensions (e.g., 16x16 for 256 features)
-			spatial_size = int((fused.shape[1] // 2) ** 0.5)
-			if spatial_size * spatial_size * 2 <= fused.shape[1]:
-				# Can reshape to square spatial format
-				fused = fused.view(batch_size, 2, spatial_size, spatial_size)
-			else:
-				# Fallback: reshape to 1x1 spatial format and interpolate
-				fused = fused.view(batch_size, fused.shape[1], 1, 1)
-				fused = F.interpolate(fused, size=(16, 16), mode='bilinear', align_corners=True)
+        # Regression
+        score = self.pred_head(z).squeeze(-1)
 
-			# Use ICNetHead for prediction
-			score, ic_map = self.icnet_head(fused)
-			return score, fused, ic_map
-		else:
-			# Use simple FC head
-			score = self.fc(fused).squeeze(-1)
-			return score, fused, None  # No IC map in simple mode
+        return score, mu, logvar, H_v, H_s

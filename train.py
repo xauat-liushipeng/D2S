@@ -16,7 +16,7 @@ from transformers import AutoTokenizer
 
 from d2s.model import FusionRegressor
 from d2s.data import IC9600Caption
-from d2s.loss import MSE_IB_Loss
+from d2s.loss import MSE_IB_Loss, compute_loss
 from d2s.utils import save_checkpoint, compute_srcc_plcc, WarmUpLR
 from d2s.config import load_config
 
@@ -61,7 +61,7 @@ def train_one_epoch(model, dataloader, optimizer, score_loss, map_loss, device, 
 		tuple: (avg_loss, avg_mse, avg_ib, srcc, plcc) - Average losses and correlation metrics
 	"""
 	model.train()  # Set model to training mode
-	total_loss, total_mse, total_ib = 0, 0, 0
+	total_loss, total_mse, total_ib, total_align = 0, 0, 0, 0
 	all_preds, all_scores = [], []
 	
 	# Record start time for this epoch
@@ -80,19 +80,13 @@ def train_one_epoch(model, dataloader, optimizer, score_loss, map_loss, device, 
 			# Multimodal mode: include text inputs
 			input_ids = batch["input_ids"].to(device)    # Tokenized text input IDs
 			attn_mask = batch["attention_mask"].to(device)  # Attention mask for text
-			preds, feats, ic_map = model(images, input_ids, attn_mask)
+			preds, mu, logvar, hv, hs = model(images, input_ids, attn_mask)
 		else:
 			# Text-free mode: only vision inputs
-			preds, feats, ic_map = model(images)
+			preds, mu, logvar, hv, hs = model(images)
 		
-		# Compute loss components (total loss, MSE loss, Information Bottleneck loss)
-		loss1, mse, ib = score_loss(preds, scores, feats)
-		if use_ic_map:
-			score_map = ic_map.mean(axis=(1, 2, 3))  # Average IC map across spatial dimensions
-			loss2 = map_loss(score_map, scores, feats)
-			loss = 0.9 * loss1 + 0.1 * loss2
-		else:
-			loss = loss1
+		loss, loss_dict = compute_loss(preds, scores, mu, logvar, hv, hs, 0.5, 2)
+		mse, ib, align = loss_dict["mse"], loss_dict["ib"], loss_dict["align"]
 
 		# Backward pass and optimization
 		optimizer.zero_grad()  # Clear previous gradients
@@ -103,6 +97,7 @@ def train_one_epoch(model, dataloader, optimizer, score_loss, map_loss, device, 
 		total_loss += loss.item()
 		total_mse += mse
 		total_ib += ib
+		total_align += align
 
 		# Collect predictions and labels for correlation computation
 		all_preds.extend(preds.detach().cpu().numpy())
@@ -118,7 +113,7 @@ def train_one_epoch(model, dataloader, optimizer, score_loss, map_loss, device, 
 		
 		# Print training progress for each iteration
 		print(f"  Iter [{iter_idx+1:3d}/{len(dataloader):3d}] | "
-			  f"Loss: {loss.item():.4f} | MSE: {mse:.4f} | IB: {ib:.6f} | "
+			  f"Loss: {loss.item():.4f} | MSE: {mse:.4f} | IB: {ib:.6f} | Align: {align:.6f} | "
 			  f"Time: {iter_time:.3f}s | ETA: {estimated_remaining_time:.1f}s | "
 			  f"Total ETA: {total_estimated_time:.1f}s")
 
@@ -145,7 +140,7 @@ def validate(model, dataloader, score_loss, map_loss, device, use_ic_map=False):
 		tuple: (avg_loss, avg_mse, avg_ib, srcc, plcc) - Average losses and correlation metrics
 	"""
 	model.eval()  # Set model to evaluation mode
-	total_loss, total_mse, total_ib = 0, 0, 0
+	total_loss, total_mse, total_ib, total_align = 0, 0, 0, 0
 	all_preds, all_scores = [], []
 	
 	# Record start time for validation
@@ -162,24 +157,19 @@ def validate(model, dataloader, score_loss, map_loss, device, use_ic_map=False):
 				# Multimodal mode: include text inputs
 				input_ids = batch["input_ids"].to(device)
 				attn_mask = batch["attention_mask"].to(device)
-				preds, feats, ic_map = model(images, input_ids, attn_mask)
+				preds, mu, logvar, hv, hs = model(images, input_ids, attn_mask)
 			else:
 				# Text-free mode: only vision inputs
-				preds, feats = model(images)
+				preds, mu, logvar, hv, hs = model(images)
 
-			# Compute loss components (total loss, MSE loss, Information Bottleneck loss)
-			loss1, mse, ib = score_loss(preds, scores, feats)
-			if use_ic_map:
-				score_map = ic_map.mean(axis=(1, 2, 3))  # Average IC map across spatial dimensions
-				loss2 = map_loss(score_map, scores, feats)
-				loss = 0.9 * loss1 + 0.1 * loss2
-			else:
-				loss = loss1
+			loss, loss_dict = compute_loss(preds, scores, mu, logvar, hv, hs, 1, 1)
+			mse, ib, align = loss_dict["mse"], loss_dict["ib"], loss_dict["align"]
 
 			# Accumulate losses for epoch average
 			total_loss += loss.item()
 			total_mse += mse
 			total_ib += ib
+			total_align += align
 			
 			# Collect predictions and labels for correlation computation
 			all_preds.extend(preds.detach().cpu().numpy())
@@ -231,6 +221,7 @@ def main():
 	# Determine device (GPU if available, otherwise CPU)
 	device = config.get_device()
 	print(f"Using device: {device}")
+	config.model.use_icnet_head = False
 
 	# Create image transforms for training and validation
 	train_transform = create_transforms(config.dataset.image_size, is_training=True)
@@ -283,8 +274,6 @@ def main():
 		model = FusionRegressor(
 			config.model.vision_model_name,    # Vision encoder (e.g., ViT, ResNet)
 			config.model.text_model_name,      # Text encoder (e.g., BERT, RoBERTa)
-			config.model.hidden_dim,           # Hidden dimension for fusion
-			config.model.use_icnet_head        # Whether to use ICNetHead
 		).to(device)
 
 		if hasattr(model, 'use_text') and model.use_text:
@@ -303,19 +292,24 @@ def main():
 		print(f"Failed to create model: {e}")
 		return
 
+	# for param in model.text_encoder.parameters():
+	# 	param.requires_grad = False
+
 	# Initialize optimizer and loss function
-	optimizer = optim.AdamW(
-		model.parameters(),
-		lr=config.train.lr,
-		weight_decay=config.train.weight_decay
+	# param groups: 文本编码器小 lr，视觉编码器和头部较大 lr
+	param_groups = [
+		{"params": model.text_encoder.parameters(), "lr": 2e-5},  # BERT 慢速
+		{"params": model.vision_encoder.parameters(), "lr": 1e-4},  # ViT / ResNet
+		{"params": list(model.pred_head.parameters()) +
+		           list(model.to_stats.parameters()), "lr": 1e-3}  # 新加层快训
+	]
+
+	optimizer = optim.AdamW(param_groups, weight_decay=1e-4)
+
+	# Cosine Annealing + Warmup 更平滑
+	scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+		optimizer, T_max=config.train.epochs
 	)
-	scheduler = optim.lr_scheduler.MultiStepLR(
-		optimizer,
-		milestones=config.train.milestone,
-		gamma=config.train.lr_decay_rate)
-	iter_per_epoch = len(train_loader)
-	if config.train.warm > 0:
-		Warmup_scheduler = WarmUpLR(optimizer, iter_per_epoch * config.train.warm)
 
 	score_loss_fn = MSE_IB_Loss(Lambda=config.train.Lambda)
 	map_loss_fn = MSE_IB_Loss(Lambda=0.)
