@@ -54,6 +54,7 @@ def compute_srcc_plcc(preds, labels):
 		plcc = pearsonr(preds, labels)[0]
 		srcc = spearmanr(preds, labels)[0]
 		rmse = np.sqrt(np.mean(np.abs(preds - labels) ** 2))
+		# Baseline uses Root Mean Absolute Error (RMAE)
 		rmae = np.sqrt(np.abs(preds - labels).mean())
 
 		# Check for NaN correlations

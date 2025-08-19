@@ -1,0 +1,24 @@
+
+Result from: Image Visual Complexity Evaluation Based on Deep Ordinal Regression
+ICNet18_152     SRCC: 0.9510 | PLCC: 0.9550 | RMSE: 0.0502 | RMAE: 0.1926
++ CORN          SRCC: 0.9510 | PLCC: 0.9535 | RMSE: 0.0477 | RMAE: 0.1910
+
+
+Result from: IC9600: A Benchmark Dataset for Automatic Image Complexity Assessment
+ICNet           SRCC: 0.9454 | PLCC: 0.9494 | RMSE: 0.0534 | RMAE: 0.2054
+Re-impl Results:
+ICNet           SRCC: 0.9446 | PLCC: 0.9470 | RMSE: 0.0582 | RMAE: 0.2156
+
+
+Experiment Results:
+R18             SRCC: 0.9472 | PLCC: 0.9511 | RMSE: 0.0507 | RMAE: 0.1981
+
+CapI            SRCC: 0.7095 | PLCC: 0.7162 | RMSE: 0.1084 | RMAE: 0.2868
+CapIII          SRCC: 0.8120 | PLCC: 0.8172 | RMSE: 0.0903 | RMAE: 0.2630
+
+R18+CapI        SRCC: 0.9456 | PLCC: 0.9501 | RMSE: 0.0535 | RMAE: 0.2044
+R18+CapII       SRCC: 0.9469 | PLCC: 0.9506 | RMSE: 0.0534 | RMAE: 0.2044
+R18+CapIII      SRCC: 0.9441 | PLCC: 0.9484 | RMSE: 0.0524 | RMAE: 0.2015
+
+VL_Align        SRCC: 0.9464 | PLCC: 0.9502 | RMSE: 0.0506 | RMAE: 0.1967
+                SRCC: 0.9453 | PLCC: 0.9497 | RMSE: 0.0524 | RMAE: 0.2018
