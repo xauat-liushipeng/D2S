@@ -55,3 +55,5 @@ Image transforms created for size: 512x512
 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 90/90 [00:32<00:00,  2.73it/s]
 SRCC: 0.9544 | PLCC: 0.9580 | RMSE: 0.0497 | RMAE: 0.1966 | Time: 32.93s
 ```
+
+We provide the trained weights `D2S_R18.pth` in this repo and `D2S_R50.pth` at [Google Drive](https://drive.google.com/file/d/1CYRuCUc-YOpg1NJXT-M0RcxgC3AAPfxX/view?usp=sharing)
