@@ -1,4 +1,4 @@
-## Describe-to-Score: Text-Guided Image Complexity Assessment
+## [Pattern Recognition] Describe-to-Score: A text-guided framework for image complexity assessment
 
 
 ### 0. Installation
@@ -54,6 +54,20 @@ Using device: cuda
 Image transforms created for size: 512x512
 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 90/90 [00:32<00:00,  2.73it/s]
 SRCC: 0.9544 | PLCC: 0.9580 | RMSE: 0.0497 | RMAE: 0.1966 | Time: 32.93s
+```
+
+
+#### Citation
+If you are using our D2S for your research, please cite the following paper:
+```
+@article{liu2026describe,
+  title={Describe-to-Score: A text-guided framework for image complexity assessment},
+  author={Liu, Shipeng and Zhao, Liang and Chen, Dengfeng and Zhang, Zhonglin},
+  journal={Pattern Recognition},
+  pages={114549},
+  year={2026},
+  publisher={Elsevier}
+}
 ```
 
 We provide the trained weights `D2S_R18.pth` in this repo and `D2S_R50.pth` at [Google Drive](https://drive.google.com/file/d/1CYRuCUc-YOpg1NJXT-M0RcxgC3AAPfxX/view?usp=sharing)
