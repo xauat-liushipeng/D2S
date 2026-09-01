@@ -1,5 +1,6 @@
 ## [Pattern Recognition] Describe-to-Score: A text-guided framework for image complexity assessment
 
+### [2026-08-05] :tada: Our paper has been accepted by [Pattern Recognition](https://www.sciencedirect.com/science/article/abs/pii/S003132032601513X)
 
 ### 0. Installation
 ```bash
